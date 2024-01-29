@@ -1,9 +1,5 @@
-//go:build !amd64 || purego
-// +build !amd64 purego
-
 package bloom
 
-//gc:nosplit
 func queryCore(r *bitrow, bits []bitrow, hashes []uint32) {
 
 	*r = bitrow{
