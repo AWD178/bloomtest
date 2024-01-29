@@ -1,0 +1,271 @@
+package bloom
+
+import (
+	"errors"
+	"math"
+	"math/bits"
+)
+
+type DocID uint64
+
+type Index struct {
+	blocks []block
+
+	meta []block
+
+	blockSize int
+	metaSize  int
+	hashes    uint32
+	mask      uint32
+	mmask     uint32
+}
+
+func NewIndex(blockSize, metaSize int, hashes int) *Index {
+	idx := &Index{
+		blocks:    []block{newBlock(blockSize)},
+		meta:      []block{newBlock(metaSize)},
+		blockSize: blockSize,
+		metaSize:  metaSize,
+		hashes:    uint32(hashes),
+		mask:      uint32(blockSize) - 1,
+		mmask:     uint32(metaSize) - 1,
+	}
+
+	idx.meta[0].addDocument()
+
+	return idx
+}
+
+func (idx *Index) AddDocument(terms []uint32) DocID {
+
+	blockid := len(idx.blocks) - 1
+	if idx.blocks[blockid].numDocuments() == idsPerBlock {
+		idx.blocks = append(idx.blocks, newBlock(idx.blockSize))
+		blockid++
+
+		mblockid := len(idx.meta) - 1
+		if idx.meta[mblockid].numDocuments() == idsPerBlock {
+			idx.meta = append(idx.meta, newBlock(idx.metaSize))
+			mblockid++
+		}
+		idx.meta[mblockid].addDocument()
+
+	}
+	docid, _ := idx.blocks[blockid].addDocument()
+
+	idx.addTerms(blockid, docid, terms)
+
+	return DocID(uint64(blockid)*idsPerBlock + uint64(docid))
+}
+
+func (idx *Index) addTerms(blockid int, docid uint16, terms []uint32) {
+
+	mblockid := blockid / idsPerBlock
+	mdocid := uint16(blockid % idsPerBlock)
+
+	for _, t := range terms {
+		h1, h2 := xorshift32(t), jenkins32(t)
+		for i := uint32(0); i < idx.hashes; i++ {
+			idx.blocks[blockid].setbit(docid, (h1+i*h2)&idx.mask)
+			idx.meta[mblockid].setbit(mdocid, (h1+i*h2)&idx.mmask)
+		}
+	}
+}
+
+func (idx *Index) Query(terms []uint32) []DocID {
+
+	var docs []DocID
+
+	var bits []uint32
+	var mbits []uint32
+
+	for _, t := range terms {
+		h1, h2 := xorshift32(t), jenkins32(t)
+		for i := uint32(0); i < idx.hashes; i++ {
+			bits = append(bits, (h1+i*h2)&idx.mask)
+			mbits = append(mbits, (h1+i*h2)&idx.mmask)
+		}
+	}
+
+	var mblocks []uint16
+	var bdocs []uint16
+	for i, mblock := range idx.meta {
+
+		mblocks = mblock.query(mbits, mblocks[:0])
+
+		for _, blockid := range mblocks {
+			b := (i*idsPerBlock + int(blockid))
+			block := idx.blocks[b]
+
+			d := block.query(bits, bdocs[:0])
+			for _, dd := range d {
+				docs = append(docs, DocID(uint64(b*idsPerBlock)+uint64(dd)))
+			}
+
+		}
+	}
+
+	return docs
+}
+
+type ShardedIndex struct {
+	idxs       []Index
+	docs       [][]DocID
+	documents  DocID
+	hashes     int
+	fprate     float64
+	capacities []int
+}
+
+func NewShardedIndex(fprate float64, hashes int) *ShardedIndex {
+	return &ShardedIndex{
+		idxs:       make([]Index, 32),
+		docs:       make([][]DocID, 32),
+		fprate:     fprate,
+		hashes:     hashes,
+		capacities: filterCapacities(fprate),
+	}
+}
+
+func (sh *ShardedIndex) AddDocument(terms []uint32) DocID {
+
+	var shard int
+	for sh.capacities[shard] < len(terms) {
+		shard++
+	}
+
+	if sh.idxs[shard].meta == nil {
+		size := 1 << uint(shard)
+		if size < 128 {
+			size = 128
+		}
+		sh.idxs[shard] = *NewIndex(size, size*idsPerBlock, sh.hashes)
+	}
+
+	sh.idxs[shard].AddDocument(terms)
+	extid := sh.documents
+
+	sh.docs[shard] = append(sh.docs[shard], extid)
+
+	sh.documents++
+
+	return extid
+}
+
+func (sh *ShardedIndex) Query(terms []uint32) []DocID {
+
+	var docs []DocID
+
+	for i := range sh.idxs {
+		d := sh.idxs[i].Query(terms)
+		for _, dd := range d {
+			docs = append(docs, sh.docs[i][dd])
+		}
+	}
+
+	return docs
+}
+
+func filterCapacities(falsePositiveRate float64) []int {
+
+	konst := (math.Ln2 * math.Ln2) / -math.Log(falsePositiveRate)
+
+	var r []int
+
+	for i := uint(0); i < 32; i++ {
+		bits := 1 << i
+		capacity := float64(bits) * konst
+		r = append(r, int(capacity))
+	}
+
+	return r
+}
+
+const idsPerBlock = 512
+
+type bitrow [8]uint64
+
+type block struct {
+	bits  []bitrow
+	valid uint16
+}
+
+func newBlock(size int) block {
+	return block{
+		bits: make([]bitrow, size),
+	}
+}
+
+func (b *block) numDocuments() uint16 {
+	return b.valid
+}
+
+var errNoSpace = errors.New("block: no space")
+
+func (b *block) addDocument() (uint16, error) {
+	if b.valid == idsPerBlock {
+		return 0, errNoSpace
+	}
+
+	docid := b.valid
+	b.valid++
+	return docid, nil
+}
+
+func (b *block) setbit(docid uint16, bit uint32) {
+	b.bits[bit][docid>>6] |= 1 << (docid & 0x3f)
+}
+
+func (b *block) getbit(docid uint16, bit uint32) uint64 {
+	return b.bits[bit][docid>>6] & (1 << (docid & 0x3f))
+}
+
+func (b *block) get(bit uint32) bitrow {
+	return b.bits[bit]
+}
+
+func (b *block) query(bits []uint32, docs []uint16) []uint16 {
+
+	if len(bits) == 0 {
+		return nil
+	}
+
+	var r bitrow
+
+	queryCore(&r, b.bits, bits)
+	return popset(r, docs)
+}
+
+func popset(b bitrow, r []uint16) []uint16 {
+
+	var docid uint64
+	for i, u := range b {
+		docid = uint64(i) * 64
+		for u != 0 {
+			tz := uint64(bits.TrailingZeros64(u))
+			u >>= tz + 1
+			docid += tz
+			r = append(r, uint16(docid))
+			docid++
+		}
+	}
+
+	return r
+}
+
+func xorshift32(y uint32) uint32 {
+	y ^= (y << 13)
+	y ^= (y >> 17)
+	y ^= (y << 5)
+	return y
+}
+
+func jenkins32(a uint32) uint32 {
+	a = (a + 0x7ed55d16) + (a << 12)
+	a = (a ^ 0xc761c23c) ^ (a >> 19)
+	a = (a + 0x165667b1) + (a << 5)
+	a = (a + 0xd3a2646c) ^ (a << 9)
+	a = (a + 0xfd7046c5) + (a << 3)
+	a = (a ^ 0xb55a4f09) ^ (a >> 16)
+	return a
+}
