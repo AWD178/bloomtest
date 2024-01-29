@@ -17,7 +17,7 @@ func BenchmarkSimpleMapSearcher_GetStoreByName(b *testing.B) {
 	s := store.NewStore(stores)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		found, err = s.GetStoreByName("store 888")
+		found, err = s.GetStoreByName("store 1")
 	}
 
 	_ = err

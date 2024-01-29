@@ -8,27 +8,45 @@ import (
 )
 
 type StoreSearcher struct {
-	stores []Store
-	Index  *bloom.Index
+	stores    []Store
+	NameIndex *bloom.Index
+	CatIndex  *bloom.Index
+	GeoIndex  *bloom.Index
 }
 
-const RateCount = 128
+const RateCount = 12
 
 func NewStore(stores []Store) *StoreSearcher {
 	s := &StoreSearcher{
 		stores,
-		bloom.NewIndex(len(stores)*RateCount, len(stores)*RateCount, 64),
+		bloom.NewIndex(len(stores)*RateCount, len(stores)*RateCount, 12),
+		bloom.NewIndex(len(stores)*RateCount, len(stores)*RateCount, 12),
+		bloom.NewIndex(len(stores)*RateCount, len(stores)*RateCount, 12),
 	}
 
 	for _, v := range s.stores {
-		catKey := strings.ReplaceAll(strings.Join(v.Categories, ""), " ", "")
-		geoKey := fmt.Sprintf("%.4f_%.4f", v.Geo.Latitude, v.Geo.Latitude)
-		resultKey := strings.ReplaceAll(v.Name, " ", "") + " " + catKey + " " + geoKey
-		tokens := make([]uint32, 0)
-		for _, t := range strings.Fields(resultKey) {
-			tokens = append(tokens, crc32.ChecksumIEEE([]byte(t)))
+		geoKey := fmt.Sprintf("%.4f %.4f", v.Geo.Latitude, v.Geo.Latitude)
+
+		tokensCat := make([]uint32, 0)
+		tokensName := make([]uint32, 0)
+		tokensGeo := make([]uint32, 0)
+
+		for _, t := range v.Categories {
+			tokensCat = append(tokensCat, crc32.ChecksumIEEE([]byte(t)))
 		}
-		s.Index.AddDocument(tokens)
+
+		for _, t := range strings.Fields(v.Name) {
+			tokensName = append(tokensName, crc32.ChecksumIEEE([]byte(t)))
+		}
+
+		for _, t := range strings.Fields(geoKey) {
+			tokensGeo = append(tokensGeo, crc32.ChecksumIEEE([]byte(t)))
+		}
+
+		s.CatIndex.AddDocument(tokensCat)
+		s.NameIndex.AddDocument(tokensName)
+		s.GeoIndex.AddDocument(tokensGeo)
+
 	}
 
 	return s
@@ -36,19 +54,19 @@ func NewStore(stores []Store) *StoreSearcher {
 
 func (s *StoreSearcher) GetStoreByName(name string) ([]Store, error) {
 	tokens := []uint32{
-		crc32.ChecksumIEEE([]byte(strings.ReplaceAll(name, " ", ""))),
+		crc32.ChecksumIEEE([]byte(name)),
 	}
 
-	ids := s.Index.Query(tokens)
+	ids := s.NameIndex.Query(tokens)
 	if len(ids) == 0 {
 		return nil, ErrNotFound
 	}
 
 	result := make([]Store, 0)
 	for _, id := range ids {
-		//if s.stores[id].Name == name {
-		result = append(result, s.stores[id])
-		//}
+		if s.stores[id].Name == name {
+			result = append(result, s.stores[id])
+		}
 	}
 
 	return result, nil
@@ -56,10 +74,10 @@ func (s *StoreSearcher) GetStoreByName(name string) ([]Store, error) {
 
 func (s *StoreSearcher) GetStoreByGeo(geo Geo) ([]Store, error) {
 	tokens := []uint32{
-		crc32.ChecksumIEEE([]byte(fmt.Sprintf("%.4f_%.4f", geo.Latitude, geo.Latitude))),
+		crc32.ChecksumIEEE([]byte(fmt.Sprintf("%.4f %.4f", geo.Latitude, geo.Latitude))),
 	}
 
-	ids := s.Index.Query(tokens)
+	ids := s.GeoIndex.Query(tokens)
 	if len(ids) == 0 {
 		return nil, ErrNotFound
 	}
@@ -75,23 +93,25 @@ func (s *StoreSearcher) GetStoreByGeo(geo Geo) ([]Store, error) {
 }
 
 func (s *StoreSearcher) GetStoreByCategories(cat []string) ([]Store, error) {
-	catKey := strings.ReplaceAll(strings.Join(cat, ""), " ", "")
-	tokens := []uint32{
-		crc32.ChecksumIEEE([]byte(catKey)),
+	tokens := make([]uint32, 0)
+	for _, c := range cat {
+		tokens = append(tokens, crc32.ChecksumIEEE([]byte(c)))
 	}
-
-	ids := s.Index.Query(tokens)
+	ids := s.CatIndex.Query(tokens)
 	if len(ids) == 0 {
 		return nil, ErrNotFound
 	}
 
 	result := make([]Store, 0)
 	for _, id := range ids {
+		idx := 0
 		for _, c := range cat {
 			if inArray(s.stores[id].Categories, c) != -1 {
-				result = append(result, s.stores[id])
-				break
+				idx++
 			}
+		}
+		if idx == len(cat) {
+			result = append(result, s.stores[id])
 		}
 	}
 
