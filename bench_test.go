@@ -17,12 +17,13 @@ func BenchmarkSimpleMapSearcher_GetStoreByName(b *testing.B) {
 	s := store.NewStore(stores)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		found, err = s.GetStoreByName("store 1")
+		found, err = s.GetStoreByName("store1")
 	}
 
 	_ = err
 
 	_ = found
+	PrintMemUsage()
 }
 
 func BenchmarkSimpleMapSearcher_GetStoreByGeo(b *testing.B) {
@@ -39,6 +40,7 @@ func BenchmarkSimpleMapSearcher_GetStoreByGeo(b *testing.B) {
 	_ = err
 
 	_ = found
+	PrintMemUsage()
 }
 
 func BenchmarkSimpleMapSearcher_GetStoreByCategories(b *testing.B) {
@@ -58,6 +60,7 @@ func BenchmarkSimpleMapSearcher_GetStoreByCategories(b *testing.B) {
 	_ = err
 
 	_ = found
+	PrintMemUsage()
 }
 
 func generateStores(i int) []store.Store {

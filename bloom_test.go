@@ -2,9 +2,17 @@ package bloom
 
 import (
 	"bloom/internal/store"
+	"fmt"
 	"reflect"
+	"runtime"
 	"testing"
 )
+
+func PrintMemUsage() {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Printf("Alloc = %v MiB\n", m.Alloc/1024/1024)
+}
 
 func TestSimpleMapSearcher_GetStoreByName(t *testing.T) {
 
@@ -65,6 +73,7 @@ func TestSimpleMapSearcher_GetStoreByName(t *testing.T) {
 
 		})
 	}
+	PrintMemUsage()
 }
 
 func TestSimpleMapSearcher_GetStoreByGeo(t *testing.T) {
@@ -169,6 +178,75 @@ func TestSimpleMapSearcher_GetStoreByCategories(t *testing.T) {
 						Longitude: 0.5,
 					},
 					Categories: []string{"category 1", "category 2"},
+				},
+			},
+			wantErr: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := store.NewStore(tt.stores)
+			got, err := s.GetStoreByCategories(tt.categories)
+
+			if !reflect.DeepEqual(err, tt.wantErr) {
+				t.Errorf("SimpleMapSearcher.GetStoreByCategories() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("SimpleMapSearcher.GetStoreByCategories() = %v, want %v", got, tt.want)
+			}
+
+		})
+	}
+}
+
+func TestSimpleMapSearcher_GetStoreByCategories2(t *testing.T) {
+
+	tests := []struct {
+		name       string
+		stores     []store.Store
+		categories []string
+		want       []store.Store
+		wantErr    error
+	}{
+		{
+			name: "test 1",
+			stores: []store.Store{
+				{
+					Name: "store 1",
+					Geo: store.Geo{
+						Latitude:  0.5,
+						Longitude: 0.5,
+					},
+					Categories: []string{"category 1", "category 2", "cat"},
+				},
+				{
+					Name: "store 2",
+					Geo: store.Geo{
+						Latitude:  0.5,
+						Longitude: 0.5,
+					},
+					Categories: []string{"category 1", "category 404", "cat"},
+				},
+			},
+			categories: []string{"category 1", "cat"},
+			want: []store.Store{
+				{
+					Name: "store 1",
+					Geo: store.Geo{
+						Latitude:  0.5,
+						Longitude: 0.5,
+					},
+					Categories: []string{"category 1", "category 2", "cat"},
+				},
+				{
+					Name: "store 2",
+					Geo: store.Geo{
+						Latitude:  0.5,
+						Longitude: 0.5,
+					},
+					Categories: []string{"category 1", "category 404", "cat"},
 				},
 			},
 			wantErr: nil,
